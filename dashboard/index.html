@@ -56,6 +56,9 @@
   .empty { color: var(--muted); padding: 18px; text-align: center; background: var(--panel);
            border: 1px dashed var(--line); border-radius: 10px; }
   .tablewrap { overflow-x: auto; }
+  .demobar { background: #3a2a0c; color: var(--amber); border-bottom: 1px solid var(--amber);
+             padding: 8px 24px; font-size: 13px; font-weight: 600; }
+  @media (max-width: 600px) { header, main, .demobar { padding-left: 16px; padding-right: 16px; } }
 </style>
 </head>
 <body>
@@ -64,6 +67,7 @@
   <h1>Trade Copier</h1>
   <div class="meta"><div id="clock">connecting…</div><div id="dir"></div></div>
 </header>
+<div id="demo" class="demobar" hidden>DEMO DATA: these accounts and trades are made up. Live data is only available from the dashboard running on your VPS (python dashboard.py).</div>
 <main>
   <h2>Master</h2>
   <div id="masters" class="grid"></div>
@@ -176,7 +180,47 @@ function render(s) {
     : `<div class="sub">Nothing yet.</div>`;
 }
 
+// Demo mode: anywhere other than the local dashboard server (e.g. a Vercel
+// deployment, which cannot see the MT5 files on the VPS), or with ?demo in the URL.
+const DEMO = !["127.0.0.1", "localhost", "[::1]"].includes(location.hostname) || location.search.includes("demo");
+const demoPaused = {};
+function demoState() {
+  const now = Math.floor(Date.now() / 1000);
+  const w = (base, amp, k) => +(base + amp * Math.sin(now / 7 + k)).toFixed(2);
+  const mPos = [
+    {ticket: 51234001, symbol: "XAUUSD", type: "BUY",  volume: 0.50, sl: 2312.50, tp: 2368.00, profit: w(184.2, 22, 1)},
+    {ticket: 51234017, symbol: "EURUSD", type: "SELL", volume: 1.00, sl: 1.09120, tp: 1.08250, profit: w(-36.5, 9, 2)},
+    {ticket: 51234022, symbol: "US30",   type: "BUY",  volume: 0.20, sl: 39210.0, tp: 39780.0, profit: w(58.0, 14, 3)},
+  ];
+  const copy = (m, f, sym, k, base) => ({ticket: base + k, masterTicket: m.ticket, symbol: sym || m.symbol, type: m.type,
+    volume: +(m.volume * f).toFixed(2), sl: m.sl, tp: m.tp, profit: +(m.profit * f).toFixed(2)});
+  const t = new Date(), ts = s => new Date(t - s * 1000).toISOString().slice(0, 19).replace("T", " ").replace(/-/g, ".");
+  const fol = (login, server, bal, f, map, base, extra) => ({
+    role: "follower", channel: "main", login, server, currency: "USD", balance: bal,
+    equity: +(bal + mPos.reduce((a, m) => a + m.profit * f, 0)).toFixed(2),
+    state: demoPaused[login] ? "PAUSED" : "OK", paused: !!demoPaused[login], lotMode: "TC_LOT_BALANCE", multiplier: 1,
+    masterLogin: 5001234, masterAge: 0, updated: now, age: 0,
+    positions: mPos.filter((m, i) => !extra.skip.includes(i)).map((m, i) => copy(m, f, map[m.symbol], i, base)),
+    log: extra.log.map(([s, l]) => ts(s) + "  " + l)});
+  return {now, dir: "Demo (no VPS connected)", exists: true,
+    masters: [{role: "master", channel: "main", login: 5001234, server: "DemoBroker-Live", currency: "USD",
+      balance: 25000, equity: +(25000 + mPos.reduce((a, p) => a + p.profit, 0)).toFixed(2),
+      connected: true, publishing: true, updated: now, age: 0, positions: mPos}],
+    followers: [
+      fol(7100555, "OtherBroker-Server", 10000, 0.4, {XAUUSD: "GOLD"}, 880100, {skip: [], log: [
+        [95, "Copied master #51234001: BUY GOLD 0.20 lots (master 0.50) -> #880100"],
+        [61, "Copied master #51234017: SELL EURUSD 0.40 lots (master 1.00) -> #880101"],
+        [40, "Copied master #51234022: BUY US30 0.08 lots (master 0.20) -> #880102"],
+        [12, "SL/TP updated #880100 GOLD SL 2312.50 TP 2368.00"]]}),
+      fol(7100777, "PropFirm-Demo", 50000, 2, {}, 990200, {skip: [2], log: [
+        [94, "Copied master #51234001: BUY XAUUSD 1.00 lots (master 0.50) -> #990200"],
+        [60, "Copied master #51234017: SELL EURUSD 2.00 lots (master 1.00) -> #990201"],
+        [39, "Not copying master #51234022: symbol 'US30' not found on this account (master: US30). Add it to SymbolMap."]]}),
+    ]};
+}
+
 async function tick() {
+  if (DEMO) { $("demo").hidden = false; render(demoState()); return; }
   try {
     const r = await fetch("/api/state", {cache: "no-store"});
     render(await r.json());
@@ -187,6 +231,7 @@ async function tick() {
 }
 
 async function pause(login, paused) {
+  if (DEMO) { demoPaused[login] = paused; return tick(); }
   await fetch("/api/pause", {method: "POST", headers: {"Content-Type": "application/json", "X-TC": "1"},
                              body: JSON.stringify({login, paused})});
   setTimeout(tick, 700);
