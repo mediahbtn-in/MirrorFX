@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trade Copier</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #151b23; --line: #262f3b; --text: #e6edf3; --muted: #8b97a6;
+    --green: #2fbf71; --red: #f2555a; --amber: #e8a33d; --blue: #4c9aff;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 14px 24px;
+           border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  header .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  header .meta { color: var(--muted); font-size: 12px; margin-left: auto; text-align: right; }
+  main { padding: 20px 24px 40px; max-width: 1400px; margin: 0 auto; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted);
+       font-weight: 600; margin: 26px 0 10px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .card.master { border-left: 3px solid var(--blue); }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .acct { font-weight: 600; font-family: var(--mono); }
+  .sub { color: var(--muted); font-size: 12px; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+  .stat .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+  .stat .v { font-family: var(--mono); font-size: 15px; }
+  .pos { color: var(--green); } .neg { color: var(--red); }
+  .badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+           border: 1px solid currentColor; white-space: nowrap; }
+  .ok { color: var(--green); } .warn { color: var(--amber); } .bad { color: var(--red); } .idle { color: var(--muted); }
+  .foot { display: flex; align-items: center; justify-content: space-between; margin-top: 12px;
+          padding-top: 10px; border-top: 1px solid var(--line); }
+  button { background: transparent; color: var(--text); border: 1px solid var(--line);
+           border-radius: 6px; padding: 5px 12px; font: inherit; font-size: 12px; cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button.resume { color: var(--green); border-color: var(--green); }
+  table { width: 100%; border-collapse: collapse; background: var(--panel);
+          border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; font-weight: 600; }
+  td.n { font-family: var(--mono); text-align: right; } th.n { text-align: right; }
+  tr.copy td:first-child { padding-left: 30px; color: var(--muted); }
+  tr.mrow td { background: #18202b; }
+  tr.missing td { color: var(--amber); }
+  .buy { color: var(--green); font-weight: 600; } .sell { color: var(--red); font-weight: 600; }
+  .log { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px;
+         font-family: var(--mono); font-size: 12px; max-height: 320px; overflow: auto; }
+  .log div { padding: 2px 0; border-bottom: 1px dashed #1f2732; }
+  .log .who { color: var(--blue); margin-right: 8px; }
+  .empty { color: var(--muted); padding: 18px; text-align: center; background: var(--panel);
+           border: 1px dashed var(--line); border-radius: 10px; }
+  .tablewrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="live"></span>
+  <h1>Trade Copier</h1>
+  <div class="meta"><div id="clock">connecting…</div><div id="dir"></div></div>
+</header>
+<main>
+  <h2>Master</h2>
+  <div id="masters" class="grid"></div>
+
+  <h2>Followers</h2>
+  <div id="followers" class="grid"></div>
+
+  <h2>Open trades</h2>
+  <div id="trades" class="tablewrap"></div>
+
+  <h2>Activity</h2>
+  <div id="log" class="log"></div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const money = (v, cur) => (v < 0 ? "-" : "") + Math.abs(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) + (cur ? " " + esc(cur) : "");
+const pl = (v, cur) => `<span class="${v > 0 ? "pos" : v < 0 ? "neg" : ""}">${v > 0 ? "+" : ""}${money(v, cur)}</span>`;
+const sum = arr => arr.reduce((a, p) => a + (p.profit || 0), 0);
+
+function stateBadge(f) {
+  if (f.age > 5) return `<span class="badge bad">EA NOT RUNNING</span>`;
+  const s = f.state || "";
+  const cls = s === "OK" ? "ok" : s === "PAUSED" || s === "STARTING" || s.startsWith("WAITING") ? "warn"
+            : s === "STOPPED" ? "idle" : "bad";
+  return `<span class="badge ${cls}">${esc(s)}</span>`;
+}
+
+function masterCard(m) {
+  const live = m.age <= 5 && m.publishing;
+  const badge = m.age > 5 ? `<span class="badge bad">EA NOT RUNNING</span>`
+              : !m.connected ? `<span class="badge bad">DISCONNECTED</span>`
+              : !m.publishing ? `<span class="badge warn">SETTLING</span>`
+              : `<span class="badge ok">PUBLISHING</span>`;
+  return `<div class="card master">
+    <div class="row"><div><div class="acct">${esc(m.login)}</div><div class="sub">${esc(m.server)} · channel “${esc(m.channel)}”</div></div>${badge}</div>
+    <div class="stats">
+      <div class="stat"><div class="k">Balance</div><div class="v">${money(m.balance)}</div></div>
+      <div class="stat"><div class="k">Equity</div><div class="v">${money(m.equity)}</div></div>
+      <div class="stat"><div class="k">Open P/L</div><div class="v">${pl(sum(m.positions))}</div></div>
+    </div>
+    <div class="foot"><span class="sub">${m.positions.length} open trade(s) · ${esc(m.currency)}</span><span class="sub">${live ? "live" : "updated " + m.age + "s ago"}</span></div>
+  </div>`;
+}
+
+function followerCard(f) {
+  const delay = f.masterAge >= 0 ? f.masterAge + "s" : "—";
+  return `<div class="card">
+    <div class="row"><div><div class="acct">${esc(f.login)}</div><div class="sub">${esc(f.server)} · channel “${esc(f.channel)}”</div></div>${stateBadge(f)}</div>
+    <div class="stats">
+      <div class="stat"><div class="k">Balance</div><div class="v">${money(f.balance)}</div></div>
+      <div class="stat"><div class="k">Equity</div><div class="v">${money(f.equity)}</div></div>
+      <div class="stat"><div class="k">Open P/L</div><div class="v">${pl(sum(f.positions))}</div></div>
+    </div>
+    <div class="foot">
+      <span class="sub">${f.positions.length} copied · ${esc((f.lotMode || "").replace("TC_LOT_", "").toLowerCase())} ×${Number(f.multiplier || 1)} · master heartbeat ${delay}</span>
+      <button class="${f.paused ? "resume" : ""}" onclick="pause(${Number(f.login)}, ${!f.paused})">${f.paused ? "Resume" : "Pause"}</button>
+    </div>
+  </div>`;
+}
+
+function tradesTable(masters, followers) {
+  const rows = [];
+  const seen = new Set();
+  for (const m of masters) {
+    for (const p of m.positions) {
+      rows.push(`<tr class="mrow"><td><b>${esc(m.login)}</b> master</td><td>#${esc(p.ticket)}</td><td>${esc(p.symbol)}</td>
+        <td class="${p.type === "BUY" ? "buy" : "sell"}">${p.type}</td><td class="n">${p.volume.toFixed(2)}</td>
+        <td class="n">${p.sl || "—"}</td><td class="n">${p.tp || "—"}</td><td class="n">${pl(p.profit)}</td></tr>`);
+      for (const f of followers.filter(f => f.channel === m.channel)) {
+        const c = f.positions.filter(x => x.masterTicket === p.ticket);
+        c.forEach(x => seen.add(f.login + ":" + x.ticket));
+        if (!c.length) {
+          rows.push(`<tr class="copy missing"><td>↳ ${esc(f.login)}</td><td colspan="7">not copied${f.paused ? " (paused)" : " — see Activity for the reason"}</td></tr>`);
+        }
+        for (const x of c) {
+          rows.push(`<tr class="copy"><td>↳ ${esc(f.login)}</td><td>#${esc(x.ticket)}</td><td>${esc(x.symbol)}</td>
+            <td class="${x.type === "BUY" ? "buy" : "sell"}">${x.type}</td><td class="n">${x.volume.toFixed(2)}</td>
+            <td class="n">${x.sl || "—"}</td><td class="n">${x.tp || "—"}</td><td class="n">${pl(x.profit)}</td></tr>`);
+        }
+      }
+    }
+  }
+  // Copies whose master trade is gone (e.g. a close that failed and is being retried)
+  for (const f of followers) for (const x of f.positions) {
+    if (seen.has(f.login + ":" + x.ticket)) continue;
+    rows.push(`<tr class="copy missing"><td>↳ ${esc(f.login)}</td><td>#${esc(x.ticket)}</td><td>${esc(x.symbol)}</td>
+      <td class="${x.type === "BUY" ? "buy" : "sell"}">${x.type}</td><td class="n">${x.volume.toFixed(2)}</td>
+      <td class="n">${x.sl || "—"}</td><td class="n">${x.tp || "—"}</td><td class="n">${pl(x.profit)} · no master</td></tr>`);
+  }
+  if (!rows.length) return `<div class="empty">No open trades</div>`;
+  return `<table><thead><tr><th>Account</th><th>Ticket</th><th>Symbol</th><th>Side</th><th class="n">Lots</th>
+    <th class="n">SL</th><th class="n">TP</th><th class="n">P/L</th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
+}
+
+function render(s) {
+  $("dir").textContent = s.dir + (s.exists ? "" : "  (folder not found — start TC_Master first)");
+  $("clock").textContent = "Updated " + new Date(s.now * 1000).toLocaleTimeString();
+  $("live").style.background = "var(--green)";
+  $("masters").innerHTML = s.masters.length ? s.masters.map(masterCard).join("")
+    : `<div class="empty">No master yet. Attach TC_Master to a chart on your master account.</div>`;
+  $("followers").innerHTML = s.followers.length ? s.followers.map(followerCard).join("")
+    : `<div class="empty">No followers yet. Attach TC_Follower on each account that should copy.</div>`;
+  $("trades").innerHTML = tradesTable(s.masters, s.followers);
+  const lines = [];
+  for (const f of s.followers) for (const l of f.log || []) lines.push({who: f.login, l});
+  lines.sort((a, b) => b.l.localeCompare(a.l));
+  $("log").innerHTML = lines.length ? lines.slice(0, 80).map(x => `<div><span class="who">${esc(x.who)}</span>${esc(x.l)}</div>`).join("")
+    : `<div class="sub">Nothing yet.</div>`;
+}
+
+async function tick() {
+  try {
+    const r = await fetch("/api/state", {cache: "no-store"});
+    render(await r.json());
+  } catch (e) {
+    $("live").style.background = "var(--red)";
+    $("clock").textContent = "Dashboard server not reachable";
+  }
+}
+
+async function pause(login, paused) {
+  await fetch("/api/pause", {method: "POST", headers: {"Content-Type": "application/json", "X-TC": "1"},
+                             body: JSON.stringify({login, paused})});
+  setTimeout(tick, 700);
+}
+
+tick();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>
